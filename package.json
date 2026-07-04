@@ -1,0 +1,31 @@
+{
+  "name": "opencode-orchestrator",
+  "version": "0.1.0",
+  "description": "Orchestrator + Swarm plugin for opencode: a claude-fable-5 Orchestrator that only plans, briefs, and verifies, directing gpt-5.5 and claude-opus-4-8 Workers.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "files": [
+    "src"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/martinthommesen/opencode-orchestrator.git"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "agents",
+    "orchestrator",
+    "subagents"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "latest",
+    "@types/bun": "latest",
+    "typescript": "latest"
+  }
+}
