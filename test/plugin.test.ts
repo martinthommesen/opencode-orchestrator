@@ -164,23 +164,26 @@ describe("model fallback chains", () => {
     reviewer: "anthropic/claude-opus-4-8",
   }
 
-  test("with both providers available every agent runs its primary model", () => {
-    const agents = resolveAgents(new Set(["anthropic", "openai"]))
+  test("with the direct providers available every agent runs its primary model", () => {
+    const agents = resolveAgents(new Set(["anthropic", "openai", "github-copilot"]))
     for (const [name, model] of Object.entries(PRIMARY)) expect(agents[name]?.model).toBe(model)
   })
 
-  test("without openai the gpt-5.5 Workers fall back to claude-opus-4-8", () => {
-    const agents = resolveAgents(new Set(["anthropic"]))
-    expect(agents["explorer"]?.model).toBe("anthropic/claude-opus-4-8")
-    expect(agents["implementer"]?.model).toBe("anthropic/claude-opus-4-8")
-    expect(agents["orchestrator"]?.model).toBe("anthropic/claude-fable-5")
+  test("fallbacks route through the Copilot subscription, never API-key billing", () => {
+    const agents = resolveAgents(new Set(["github-copilot"]))
+    for (const name of ["orchestrator", "orchestrator-plan", "explorer", "implementer"]) {
+      expect(agents[name]?.model).toBe("github-copilot/gpt-5.5")
+    }
+    for (const name of ["designer", "reviewer"]) {
+      expect(agents[name]?.model).toBe("github-copilot/claude-opus-4.8")
+    }
   })
 
-  test("without anthropic every Claude agent falls back to gpt-5.5", () => {
-    const agents = resolveAgents(new Set(["openai"]))
-    for (const name of ["orchestrator", "orchestrator-plan", "designer", "reviewer"]) {
-      expect(agents[name]?.model).toBe("openai/gpt-5.5")
-    }
+  test("a missing provider never reroutes to another direct API provider", () => {
+    const agents = resolveAgents(new Set(["anthropic"]))
+    expect(agents["orchestrator"]?.model).toBe("anthropic/claude-fable-5")
+    // openai and github-copilot both unavailable: keep the primary rather
+    // than crossing to a different direct provider.
     expect(agents["explorer"]?.model).toBe("openai/gpt-5.5")
   })
 

@@ -46,6 +46,11 @@ type AgentBlueprint = Omit<AgentDefinition, "model"> & { models: readonly [strin
 const FABLE = "anthropic/claude-fable-5"
 const OPUS = "anthropic/claude-opus-4-8"
 const GPT_5_5 = "openai/gpt-5.5"
+// Fallbacks route through the Copilot subscription — never API-key billing.
+// Copilot uses dot-form Claude IDs and carries no fable-5, so the
+// orchestrators fall back to Copilot's gpt-5.5 (highest available intelligence).
+const COPILOT_GPT_5_5 = "github-copilot/gpt-5.5"
+const COPILOT_OPUS = "github-copilot/claude-opus-4.8"
 
 const PROVIDER_ENV_KEYS: Record<string, string> = {
   anthropic: "ANTHROPIC_API_KEY",
@@ -118,7 +123,7 @@ const BLUEPRINTS: Record<string, AgentBlueprint> = {
     description:
       "Directs the Swarm: decomposes work into Briefs, routes them to Workers, verifies claims by Spot-check, and gates acceptance behind Reviewer Verdicts. Never edits files or runs commands itself.",
     mode: "primary",
-    models: [FABLE, GPT_5_5],
+    models: [FABLE, COPILOT_GPT_5_5],
     variant: "high",
     prompt: ORCHESTRATOR_PROMPT,
     permission: orchestratorPermission({
@@ -132,7 +137,7 @@ const BLUEPRINTS: Record<string, AgentBlueprint> = {
     description:
       "The Orchestrator behind a read-only Swarm fence: it can spawn only the Explorer and Reviewer, so nothing reachable from this agent can mutate the working tree. Plan here, then switch to orchestrator to execute.",
     mode: "primary",
-    models: [FABLE, GPT_5_5],
+    models: [FABLE, COPILOT_GPT_5_5],
     variant: "high",
     prompt: ORCHESTRATOR_PLAN_PROMPT,
     permission: orchestratorPermission({
@@ -144,7 +149,7 @@ const BLUEPRINTS: Record<string, AgentBlueprint> = {
     description:
       "Read-only reconnaissance Worker. Use proactively for codebase and docs questions: mapping territory, locating symbols, and gathering cited evidence before work is briefed.",
     mode: "subagent",
-    models: [GPT_5_5, OPUS],
+    models: [GPT_5_5, COPILOT_GPT_5_5],
     variant: "high",
     prompt: EXPLORER_PROMPT,
     permission: {
@@ -157,7 +162,7 @@ const BLUEPRINTS: Record<string, AgentBlueprint> = {
     description:
       "Implementation Worker for everything except User-facing surfaces. Use proactively for features, refactors, migrations, and tests once a tight, self-contained Brief exists.",
     mode: "subagent",
-    models: [GPT_5_5, OPUS],
+    models: [GPT_5_5, COPILOT_GPT_5_5],
     variant: "high",
     prompt: IMPLEMENTER_PROMPT,
     permission: {
@@ -168,7 +173,7 @@ const BLUEPRINTS: Record<string, AgentBlueprint> = {
     description:
       "Design-and-build Worker that owns User-facing surfaces (UI, UX flows, visual styling, copy, public API shape) end to end, and produces taste-sensitive proposals such as API shapes and architecture options.",
     mode: "subagent",
-    models: [OPUS, GPT_5_5],
+    models: [OPUS, COPILOT_OPUS],
     variant: "high",
     prompt: DESIGNER_PROMPT,
     permission: {
@@ -179,7 +184,7 @@ const BLUEPRINTS: Record<string, AgentBlueprint> = {
     description:
       "Read-only review Worker. Use proactively for Verdicts on plans and diffs: accept or revise, with concrete located findings classified as execution or approach flaws.",
     mode: "subagent",
-    models: [OPUS, GPT_5_5],
+    models: [OPUS, COPILOT_OPUS],
     variant: "high",
     prompt: REVIEWER_PROMPT,
     permission: {
