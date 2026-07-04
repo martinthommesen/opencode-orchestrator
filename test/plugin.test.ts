@@ -5,7 +5,7 @@ import type { AgentDefinition } from "../src/index.ts"
 
 const PRIMARIES = ["orchestrator", "orchestrator-plan"] as const
 const WORKERS = ["explorer", "implementer", "designer", "reviewer"] as const
-const SWARM = [...PRIMARIES, ...WORKERS] as const
+const INJECTED_AGENTS = [...PRIMARIES, ...WORKERS] as const
 
 async function inject(config: Config = {}): Promise<Config> {
   const hooks = await OrchestratorPlugin.server({} as PluginInput)
@@ -32,10 +32,10 @@ describe("plugin module", () => {
   })
 })
 
-describe("roster", () => {
-  test("injects exactly the six swarm agents into an empty config", async () => {
+describe("injected agents", () => {
+  test("injects exactly the six agent entries into an empty config", async () => {
     const config = await inject()
-    expect(Object.keys(agentsOf(config)).sort()).toEqual([...SWARM].sort())
+    expect(Object.keys(agentsOf(config)).sort()).toEqual([...INJECTED_AGENTS].sort())
   })
 
   test("primaries run claude-fable-5 at high effort as opt-in primary agents", async () => {
@@ -47,7 +47,7 @@ describe("roster", () => {
     }
   })
 
-  test("workers are subagents pinned to their models at high effort", async () => {
+  test("Workers are subagents pinned to their models at high effort", async () => {
     const agents = agentsOf(await inject())
     const models: Record<(typeof WORKERS)[number], string> = {
       explorer: "openai/gpt-5.5",
@@ -64,7 +64,7 @@ describe("roster", () => {
 
   test("every agent ships a description and a prompt, never sets temperature, and stays @-mentionable", async () => {
     const agents = agentsOf(await inject())
-    for (const name of SWARM) {
+    for (const name of INJECTED_AGENTS) {
       const agent = agents[name]
       expect(agent?.description?.length).toBeGreaterThan(0)
       expect(agent?.prompt?.length).toBeGreaterThan(0)
@@ -101,7 +101,7 @@ describe("orchestrator lockdown", () => {
     expect(fullFence).not.toEqual(planFence)
   })
 
-  test("the Plan Orchestrator carries the full Orchestrator prompt plus a plan-mode preamble", async () => {
+  test("the Plan Orchestrator carries the full Orchestrator prompt plus a mode preamble", async () => {
     const agents = agentsOf(await inject())
     const base = agents["orchestrator"]?.prompt ?? ""
     const plan = agents["orchestrator-plan"]?.prompt ?? ""
@@ -142,7 +142,7 @@ describe("merge safety", () => {
     const config: Config = { agent: { orchestrator: { ...userOrchestrator } } }
     await inject(config)
     expect(config.agent?.["orchestrator"]).toEqual(userOrchestrator)
-    expect(Object.keys(agentsOf(config)).sort()).toEqual([...SWARM].sort())
+    expect(Object.keys(agentsOf(config)).sort()).toEqual([...INJECTED_AGENTS].sort())
   })
 
   test("preserves unrelated agents and unrelated config keys", async () => {
@@ -155,6 +155,6 @@ describe("merge safety", () => {
     expect(config.model).toBe("user/default-model")
     expect(config.theme).toBe("user-theme")
     expect(config.agent?.["mine"]).toEqual({ description: "user agent", mode: "subagent" })
-    expect(Object.keys(agentsOf(config)).sort()).toEqual([...SWARM, "mine"].sort())
+    expect(Object.keys(agentsOf(config)).sort()).toEqual([...INJECTED_AGENTS, "mine"].sort())
   })
 })

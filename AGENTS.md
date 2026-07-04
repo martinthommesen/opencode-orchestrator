@@ -8,7 +8,7 @@ An opencode plugin that ships an Orchestrator agent (claude-fable-5, high effort
 - Layout: `src/index.ts` (agent definitions + config hook, default `{ id, server }` export), `src/prompts.ts` (all orchestration policy as exported string constants), `test/plugin.test.ts` (the entire external contract).
 - The spec is PRD issue #1; it matches the implementation. Reading order for context:
   1. `CONTEXT.md` — glossary. Use these exact terms (Orchestrator, Plan Orchestrator, Worker, Brief, Verdict, Spot-check, User-facing surface) in code, tests, and issues.
-  2. `gh issue view 1 --comments` — the PRD: agent roster, permission matrices, orchestration policy, test contract.
+  2. `gh issue view 1 --comments` — the PRD: the six agents, permission matrices, orchestration policy, test contract.
   3. `docs/adr/0001-plugin-config-hook-agent-injection.md` — why agents ship via the `config` hook, not markdown files. Don't "fix" this.
   4. `docs/research/opencode-orchestrator-plugin.md` — every opencode API fact used here, cited against opencode source (pinned to commit `a226767`, 2026-07-04). Don't re-research these; if opencode behavior seems to contradict the doc, check the pin date first.
 - The published `@opencode-ai/plugin`/SDK generated types lag the runtime schema (no agent `variant`; `permission` closed over five keys). `AgentDefinition` in `src/index.ts` is the source-verified shape; the one widening cast lives in the config hook. Don't "fix" the cast by weakening the definitions.
@@ -28,6 +28,7 @@ An opencode plugin that ships an Orchestrator agent (claude-fable-5, high effort
 - TypeScript + Bun; types from `@opencode-ai/plugin`; new-style `{ server }` plugin export.
 - Prompts are exported TS string constants — no runtime file loading.
 - Tests: `bun test`. Single seam: call the exported plugin's `config` hook with a stub input, assert the six injected agent entries and merge safety (never overwrite pre-existing user agents). Never assert on prompt wording.
+- The Implementer/Designer "full toolset" is inherited, not granted: the plugin sets only a `task` deny; edit/bash/webfetch flow from opencode defaults plus the user's global permission config, so user-level ask/deny gates keep applying inside Worker sessions. Do not "complete" the matrix with blanket allows — that would override user gates and break the additive posture.
 - Posture is additive: never disable built-in agents, no runtime enforcement hooks, no compaction hooks.
 
 ## Agent skills
