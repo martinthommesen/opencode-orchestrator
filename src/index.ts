@@ -24,11 +24,14 @@ type PermissionRules = Record<string, PermissionAction | Record<string, Permissi
  * opencode source in docs/research/opencode-orchestrator-plugin.md (Q2, Q3,
  * Q5); the single widening cast lives in the config hook.
  */
+/** Reasoning effort variants used by this plugin's models. */
+type Effort = "high" | "xhigh" | "max"
+
 export type AgentDefinition = {
   description: string
   mode: "primary" | "subagent"
   model: string
-  variant: "high"
+  variant: Effort
   prompt: string
   permission: PermissionRules
 }
@@ -43,30 +46,21 @@ export type AgentDefinition = {
  */
 type AgentBlueprint = Omit<AgentDefinition, "model"> & { models: readonly [string, ...string[]] }
 
-const FABLE = "anthropic/claude-fable-5"
+// Primaries run on the Copilot subscription; fallbacks are the same model on
+// its direct (subscription-OAuth) provider. Copilot uses dot-form Claude IDs.
+const COPILOT_OPUS = "github-copilot/claude-opus-4.8"
+const COPILOT_GPT_5_5 = "github-copilot/gpt-5.5"
 const OPUS = "anthropic/claude-opus-4-8"
 const GPT_5_5 = "openai/gpt-5.5"
-// Fallbacks route through the Copilot subscription — never API-key billing.
-// Copilot uses dot-form Claude IDs and carries no fable-5, so the
-// orchestrators fall back to Copilot's gpt-5.5 (highest available intelligence).
-const COPILOT_GPT_5_5 = "github-copilot/gpt-5.5"
-const COPILOT_OPUS = "github-copilot/claude-opus-4.8"
-
-const PROVIDER_ENV_KEYS: Record<string, string> = {
-  anthropic: "ANTHROPIC_API_KEY",
-  openai: "OPENAI_API_KEY",
-}
 
 /**
- * Providers usable on this machine: an env API key, an entry in opencode's
- * auth store, or a provider configured in the loaded config. Best effort —
- * an unreadable store just means env/config decide.
+ * Providers usable on this machine: an entry in opencode's auth store or a
+ * provider configured in the loaded config. API keys are deliberately not
+ * consulted — this plugin routes through subscriptions only. Best effort: an
+ * unreadable store just means config decides.
  */
 export function authenticatedProviders(configured: Iterable<string> = []): Set<string> {
   const providers = new Set(configured)
-  for (const [provider, key] of Object.entries(PROVIDER_ENV_KEYS)) {
-    if (process.env[key]) providers.add(provider)
-  }
   try {
     const dataHome = process.env["XDG_DATA_HOME"] ?? join(homedir(), ".local", "share")
     const auth = JSON.parse(readFileSync(join(dataHome, "opencode", "auth.json"), "utf8")) as Record<string, unknown>
@@ -123,8 +117,8 @@ const BLUEPRINTS: Record<string, AgentBlueprint> = {
     description:
       "Directs the Swarm: decomposes work into Briefs, routes them to Workers, verifies claims by Spot-check, and gates acceptance behind Reviewer Verdicts. Never edits files or runs commands itself.",
     mode: "primary",
-    models: [FABLE, COPILOT_GPT_5_5],
-    variant: "high",
+    models: [COPILOT_OPUS, OPUS],
+    variant: "max",
     prompt: ORCHESTRATOR_PROMPT,
     permission: orchestratorPermission({
       explorer: "allow",
@@ -137,8 +131,8 @@ const BLUEPRINTS: Record<string, AgentBlueprint> = {
     description:
       "The Orchestrator behind a read-only Swarm fence: it can spawn only the Explorer and Reviewer, so nothing reachable from this agent can mutate the working tree. Plan here, then switch to orchestrator to execute.",
     mode: "primary",
-    models: [FABLE, COPILOT_GPT_5_5],
-    variant: "high",
+    models: [COPILOT_OPUS, OPUS],
+    variant: "max",
     prompt: ORCHESTRATOR_PLAN_PROMPT,
     permission: orchestratorPermission({
       explorer: "allow",
@@ -149,7 +143,7 @@ const BLUEPRINTS: Record<string, AgentBlueprint> = {
     description:
       "Read-only reconnaissance Worker. Use proactively for codebase and docs questions: mapping territory, locating symbols, and gathering cited evidence before work is briefed.",
     mode: "subagent",
-    models: [GPT_5_5, COPILOT_GPT_5_5],
+    models: [COPILOT_GPT_5_5, GPT_5_5],
     variant: "high",
     prompt: EXPLORER_PROMPT,
     permission: {
@@ -162,7 +156,7 @@ const BLUEPRINTS: Record<string, AgentBlueprint> = {
     description:
       "Implementation Worker for everything except User-facing surfaces. Use proactively for features, refactors, migrations, and tests once a tight, self-contained Brief exists.",
     mode: "subagent",
-    models: [GPT_5_5, COPILOT_GPT_5_5],
+    models: [COPILOT_GPT_5_5, GPT_5_5],
     variant: "high",
     prompt: IMPLEMENTER_PROMPT,
     permission: {
@@ -173,7 +167,7 @@ const BLUEPRINTS: Record<string, AgentBlueprint> = {
     description:
       "Design-and-build Worker that owns User-facing surfaces (UI, UX flows, visual styling, copy, public API shape) end to end, and produces taste-sensitive proposals such as API shapes and architecture options.",
     mode: "subagent",
-    models: [OPUS, COPILOT_OPUS],
+    models: [COPILOT_OPUS, OPUS],
     variant: "high",
     prompt: DESIGNER_PROMPT,
     permission: {
@@ -184,8 +178,8 @@ const BLUEPRINTS: Record<string, AgentBlueprint> = {
     description:
       "Read-only review Worker. Use proactively for Verdicts on plans and diffs: accept or revise, with concrete located findings classified as execution or approach flaws.",
     mode: "subagent",
-    models: [OPUS, COPILOT_OPUS],
-    variant: "high",
+    models: [COPILOT_OPUS, OPUS],
+    variant: "xhigh",
     prompt: REVIEWER_PROMPT,
     permission: {
       "*": "deny",
@@ -256,9 +250,9 @@ function toV2Ruleset(definition: AgentDefinition): PermissionRule[] {
   return [...FULL_TOOLSET_BASELINE, ...toRuleset(definition.permission)]
 }
 
-function modelRef(model: string): { providerID: string; id: string; variant: "high" } {
+function modelRef(model: string, variant: Effort): { providerID: string; id: string; variant: Effort } {
   const slash = model.indexOf("/")
-  return { providerID: model.slice(0, slash), id: model.slice(slash + 1), variant: "high" }
+  return { providerID: model.slice(0, slash), id: model.slice(slash + 1), variant }
 }
 
 function upsertAgents(draft: AgentDraft): void {
@@ -269,7 +263,7 @@ function upsertAgents(draft: AgentDraft): void {
       agent.description = definition.description
       agent.mode = definition.mode
       agent.system = definition.prompt
-      agent.model = modelRef(definition.model)
+      agent.model = modelRef(definition.model, definition.variant)
       agent.permissions.push(...toV2Ruleset(definition))
     })
   }

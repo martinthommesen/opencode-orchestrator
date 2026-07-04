@@ -1,13 +1,19 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, test } from "bun:test"
 import type { Config, PluginInput } from "@opencode-ai/plugin"
 import type { AgentDraft, PluginContext } from "@opencode-ai/plugin/v2/promise"
 import OrchestratorPlugin, { resolveAgents } from "../src/index.ts"
 import type { AgentDefinition, PermissionRule } from "../src/index.ts"
 
-// Model resolution consults this machine's provider auth; pin both providers
-// as available so the seam tests are hermetic and assert the primary models.
-process.env["ANTHROPIC_API_KEY"] ??= "contract-test"
-process.env["OPENAI_API_KEY"] ??= "contract-test"
+// Model resolution consults this machine's auth store. Point XDG_DATA_HOME at
+// a temp store with only github-copilot so the seam tests are hermetic and
+// assert the Copilot primaries regardless of the developer's real providers.
+const xdgHome = mkdtempSync(join(tmpdir(), "oc-orch-test-"))
+mkdirSync(join(xdgHome, "opencode"), { recursive: true })
+writeFileSync(join(xdgHome, "opencode", "auth.json"), JSON.stringify({ "github-copilot": { type: "oauth" } }))
+process.env["XDG_DATA_HOME"] = xdgHome
 
 const PRIMARIES = ["orchestrator", "orchestrator-plan"] as const
 const WORKERS = ["explorer", "implementer", "designer", "reviewer"] as const
@@ -56,27 +62,27 @@ describe("injected agents", () => {
     expect(Object.keys(agentsOf(config)).sort()).toEqual([...INJECTED_AGENTS].sort())
   })
 
-  test("primaries run claude-fable-5 at high effort as opt-in primary agents", async () => {
+  test("primaries run Copilot opus-4.8 at max effort as opt-in primary agents", async () => {
     const agents = agentsOf(await inject())
     for (const name of PRIMARIES) {
       expect(agents[name]?.mode).toBe("primary")
-      expect(agents[name]?.model).toBe("anthropic/claude-fable-5")
-      expect(agents[name]?.variant).toBe("high")
+      expect(agents[name]?.model).toBe("github-copilot/claude-opus-4.8")
+      expect(agents[name]?.variant).toBe("max")
     }
   })
 
-  test("Workers are subagents pinned to their models at high effort", async () => {
+  test("Workers are subagents pinned to their Copilot models and per-role efforts", async () => {
     const agents = agentsOf(await inject())
-    const models: Record<(typeof WORKERS)[number], string> = {
-      explorer: "openai/gpt-5.5",
-      implementer: "openai/gpt-5.5",
-      designer: "anthropic/claude-opus-4-8",
-      reviewer: "anthropic/claude-opus-4-8",
+    const spec: Record<(typeof WORKERS)[number], { model: string; variant: string }> = {
+      explorer: { model: "github-copilot/gpt-5.5", variant: "high" },
+      implementer: { model: "github-copilot/gpt-5.5", variant: "high" },
+      designer: { model: "github-copilot/claude-opus-4.8", variant: "high" },
+      reviewer: { model: "github-copilot/claude-opus-4.8", variant: "xhigh" },
     }
     for (const name of WORKERS) {
       expect(agents[name]?.mode).toBe("subagent")
-      expect(agents[name]?.model).toBe(models[name])
-      expect(agents[name]?.variant).toBe("high")
+      expect(agents[name]?.model).toBe(spec[name].model)
+      expect(agents[name]?.variant as string).toBe(spec[name].variant)
     }
   })
 
@@ -156,40 +162,47 @@ describe("worker permission matrix", () => {
 
 describe("model fallback chains", () => {
   const PRIMARY: Record<string, string> = {
-    orchestrator: "anthropic/claude-fable-5",
-    "orchestrator-plan": "anthropic/claude-fable-5",
-    explorer: "openai/gpt-5.5",
-    implementer: "openai/gpt-5.5",
-    designer: "anthropic/claude-opus-4-8",
-    reviewer: "anthropic/claude-opus-4-8",
+    orchestrator: "github-copilot/claude-opus-4.8",
+    "orchestrator-plan": "github-copilot/claude-opus-4.8",
+    explorer: "github-copilot/gpt-5.5",
+    implementer: "github-copilot/gpt-5.5",
+    designer: "github-copilot/claude-opus-4.8",
+    reviewer: "github-copilot/claude-opus-4.8",
   }
 
-  test("with the direct providers available every agent runs its primary model", () => {
-    const agents = resolveAgents(new Set(["anthropic", "openai", "github-copilot"]))
+  test("with Copilot available every agent runs its Copilot primary model", () => {
+    const agents = resolveAgents(new Set(["github-copilot", "anthropic", "openai"]))
     for (const [name, model] of Object.entries(PRIMARY)) expect(agents[name]?.model).toBe(model)
   })
 
-  test("fallbacks route through the Copilot subscription, never API-key billing", () => {
-    const agents = resolveAgents(new Set(["github-copilot"]))
-    for (const name of ["orchestrator", "orchestrator-plan", "explorer", "implementer"]) {
-      expect(agents[name]?.model).toBe("github-copilot/gpt-5.5")
-    }
-    for (const name of ["designer", "reviewer"]) {
-      expect(agents[name]?.model).toBe("github-copilot/claude-opus-4.8")
-    }
-  })
-
-  test("a missing provider never reroutes to another direct API provider", () => {
-    const agents = resolveAgents(new Set(["anthropic"]))
-    expect(agents["orchestrator"]?.model).toBe("anthropic/claude-fable-5")
-    // openai and github-copilot both unavailable: keep the primary rather
-    // than crossing to a different direct provider.
+  test("without Copilot each agent falls back to the same model on its direct provider", () => {
+    const agents = resolveAgents(new Set(["anthropic", "openai"]))
+    expect(agents["orchestrator"]?.model).toBe("anthropic/claude-opus-4-8")
+    expect(agents["orchestrator-plan"]?.model).toBe("anthropic/claude-opus-4-8")
+    expect(agents["designer"]?.model).toBe("anthropic/claude-opus-4-8")
+    expect(agents["reviewer"]?.model).toBe("anthropic/claude-opus-4-8")
     expect(agents["explorer"]?.model).toBe("openai/gpt-5.5")
+    expect(agents["implementer"]?.model).toBe("openai/gpt-5.5")
   })
 
-  test("with no provider available the primary model is kept for a clear runtime error", () => {
+  test("with no provider available the Copilot primary is kept for a clear runtime error", () => {
     const agents = resolveAgents(new Set())
     for (const [name, model] of Object.entries(PRIMARY)) expect(agents[name]?.model).toBe(model)
+  })
+
+  test("per-role reasoning efforts survive resolution on both primary and fallback", () => {
+    const efforts: Record<string, string> = {
+      orchestrator: "max",
+      "orchestrator-plan": "max",
+      explorer: "high",
+      implementer: "high",
+      designer: "high",
+      reviewer: "xhigh",
+    }
+    for (const available of [new Set(["github-copilot"]), new Set(["anthropic", "openai"])]) {
+      const agents = resolveAgents(available)
+      for (const [name, variant] of Object.entries(efforts)) expect(agents[name]?.variant as string).toBe(variant)
+    }
   })
 })
 
@@ -292,17 +305,17 @@ describe("v2 injected agents", () => {
     expect([...agents.keys()].sort()).toEqual([...INJECTED_AGENTS].sort())
     for (const name of PRIMARIES) {
       expect(agents.get(name)?.mode).toBe("primary")
-      expect(agents.get(name)?.model).toEqual({ providerID: "anthropic", id: "claude-fable-5", variant: "high" })
+      expect(agents.get(name)?.model).toEqual({ providerID: "github-copilot", id: "claude-opus-4.8", variant: "max" })
     }
-    const models: Record<(typeof WORKERS)[number], { providerID: string; id: string }> = {
-      explorer: { providerID: "openai", id: "gpt-5.5" },
-      implementer: { providerID: "openai", id: "gpt-5.5" },
-      designer: { providerID: "anthropic", id: "claude-opus-4-8" },
-      reviewer: { providerID: "anthropic", id: "claude-opus-4-8" },
+    const models: Record<(typeof WORKERS)[number], { providerID: string; id: string; variant: string }> = {
+      explorer: { providerID: "github-copilot", id: "gpt-5.5", variant: "high" },
+      implementer: { providerID: "github-copilot", id: "gpt-5.5", variant: "high" },
+      designer: { providerID: "github-copilot", id: "claude-opus-4.8", variant: "high" },
+      reviewer: { providerID: "github-copilot", id: "claude-opus-4.8", variant: "xhigh" },
     }
     for (const name of WORKERS) {
       expect(agents.get(name)?.mode).toBe("subagent")
-      expect(agents.get(name)?.model).toEqual({ ...models[name], variant: "high" })
+      expect(agents.get(name)?.model).toEqual(models[name])
     }
     for (const name of INJECTED_AGENTS) {
       expect(agents.get(name)?.system?.length).toBeGreaterThan(0)
