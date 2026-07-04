@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import type { Config, PluginInput } from "@opencode-ai/plugin"
+import type { AgentDraft, PluginContext } from "@opencode-ai/plugin/v2/promise"
 import OrchestratorPlugin from "../src/index.ts"
-import type { AgentDefinition } from "../src/index.ts"
+import type { AgentDefinition, PermissionRule } from "../src/index.ts"
 
 const PRIMARIES = ["orchestrator", "orchestrator-plan"] as const
 const WORKERS = ["explorer", "implementer", "designer", "reviewer"] as const
@@ -29,6 +30,10 @@ describe("plugin module", () => {
   test("exposes a v1 plugin module with an id for file-based loading", () => {
     expect(OrchestratorPlugin.id).toBe("opencode-orchestrator")
     expect(typeof OrchestratorPlugin.server).toBe("function")
+  })
+
+  test("exposes a v2 setup on the same default export for the Desktop server", () => {
+    expect(typeof OrchestratorPlugin.setup).toBe("function")
   })
 })
 
@@ -156,5 +161,155 @@ describe("merge safety", () => {
     expect(config.theme).toBe("user-theme")
     expect(config.agent?.["mine"]).toEqual({ description: "user agent", mode: "subagent" })
     expect(Object.keys(agentsOf(config)).sort()).toEqual([...INJECTED_AGENTS, "mine"].sort())
+  })
+})
+
+// --- v2 (Desktop server) seam -------------------------------------------
+
+type V2Agent = {
+  id: string
+  model?: { providerID: string; id: string; variant?: string }
+  request: { headers: Record<string, string>; body: Record<string, unknown> }
+  system?: string
+  description?: string
+  mode: "subagent" | "primary" | "all"
+  hidden: boolean
+  permissions: PermissionRule[]
+}
+
+function emptyV2Agent(id: string): V2Agent {
+  return { id, request: { headers: {}, body: {} }, mode: "all", hidden: false, permissions: [] }
+}
+
+/** Runs the plugin's v2 setup against a Map-backed AgentDraft stand-in. */
+async function injectV2(initial: V2Agent[] = []): Promise<Map<string, V2Agent>> {
+  const agents = new Map(initial.map((agent) => [agent.id, agent]))
+  const draft: AgentDraft = {
+    list: () => [...agents.values()] as never,
+    get: (id) => agents.get(id) as never,
+    default: () => {},
+    update: (id, fn) => {
+      const current = agents.get(id) ?? emptyV2Agent(id)
+      agents.set(id, current)
+      fn(current as never)
+      current.id = id
+    },
+    remove: (id) => void agents.delete(id),
+  }
+  const transforms: Array<(draft: AgentDraft) => Promise<void> | void> = []
+  const context = {
+    options: {},
+    agent: {
+      transform: async (callback: (draft: AgentDraft) => Promise<void> | void) => {
+        transforms.push(callback)
+        return { dispose: async () => {} }
+      },
+      reload: async () => {},
+    },
+  } as unknown as PluginContext
+  await OrchestratorPlugin.setup(context)
+  for (const transform of transforms) await transform(draft)
+  return agents
+}
+
+const V2_READS: PermissionRule[] = [
+  { action: "read", resource: "*", effect: "allow" },
+  { action: "grep", resource: "*", effect: "allow" },
+  { action: "glob", resource: "*", effect: "allow" },
+  { action: "list", resource: "*", effect: "allow" },
+]
+
+const V2_ENV_GUARDS: PermissionRule[] = [
+  { action: "read", resource: "*.env", effect: "ask" },
+  { action: "read", resource: "*.env.*", effect: "ask" },
+  { action: "read", resource: "*.env.example", effect: "allow" },
+]
+
+const V2_FULL_TOOLSET: PermissionRule[] = [
+  { action: "*", resource: "*", effect: "allow" },
+  { action: "external_directory", resource: "*", effect: "ask" },
+  ...V2_ENV_GUARDS,
+  { action: "task", resource: "*", effect: "deny" },
+]
+
+describe("v2 injected agents", () => {
+  test("upserts exactly the six agent entries with models, modes, and prompts", async () => {
+    const agents = await injectV2()
+    expect([...agents.keys()].sort()).toEqual([...INJECTED_AGENTS].sort())
+    for (const name of PRIMARIES) {
+      expect(agents.get(name)?.mode).toBe("primary")
+      expect(agents.get(name)?.model).toEqual({ providerID: "anthropic", id: "claude-fable-5", variant: "high" })
+    }
+    const models: Record<(typeof WORKERS)[number], { providerID: string; id: string }> = {
+      explorer: { providerID: "openai", id: "gpt-5.5" },
+      implementer: { providerID: "openai", id: "gpt-5.5" },
+      designer: { providerID: "anthropic", id: "claude-opus-4-8" },
+      reviewer: { providerID: "anthropic", id: "claude-opus-4-8" },
+    }
+    for (const name of WORKERS) {
+      expect(agents.get(name)?.mode).toBe("subagent")
+      expect(agents.get(name)?.model).toEqual({ ...models[name], variant: "high" })
+    }
+    for (const name of INJECTED_AGENTS) {
+      expect(agents.get(name)?.system?.length).toBeGreaterThan(0)
+      expect(agents.get(name)?.description?.length).toBeGreaterThan(0)
+      expect(agents.get(name)?.hidden).toBe(false)
+    }
+  })
+
+  test("the Orchestrator ruleset is a blanket deny with Spot-check, todo, question, and Swarm allows", async () => {
+    const agents = await injectV2()
+    expect(agents.get("orchestrator")?.permissions).toEqual([
+      { action: "*", resource: "*", effect: "deny" },
+      ...V2_READS,
+      { action: "todowrite", resource: "*", effect: "allow" },
+      { action: "question", resource: "*", effect: "allow" },
+      { action: "task", resource: "*", effect: "deny" },
+      { action: "task", resource: "explorer", effect: "allow" },
+      { action: "task", resource: "implementer", effect: "allow" },
+      { action: "task", resource: "designer", effect: "allow" },
+      { action: "task", resource: "reviewer", effect: "allow" },
+      ...V2_ENV_GUARDS,
+    ])
+  })
+
+  test("the Plan Orchestrator's task fence admits only the read-only Workers", async () => {
+    const agents = await injectV2()
+    const taskRules = agents.get("orchestrator-plan")?.permissions.filter((rule) => rule.action === "task")
+    expect(taskRules).toEqual([
+      { action: "task", resource: "*", effect: "deny" },
+      { action: "task", resource: "explorer", effect: "allow" },
+      { action: "task", resource: "reviewer", effect: "allow" },
+    ])
+  })
+
+  test("the Explorer and Reviewer are mechanically read-only", async () => {
+    const agents = await injectV2()
+    expect(agents.get("explorer")?.permissions).toEqual([
+      { action: "*", resource: "*", effect: "deny" },
+      ...V2_READS,
+      { action: "webfetch", resource: "*", effect: "allow" },
+      ...V2_ENV_GUARDS,
+    ])
+    expect(agents.get("reviewer")?.permissions).toEqual([
+      { action: "*", resource: "*", effect: "deny" },
+      ...V2_READS,
+      ...V2_ENV_GUARDS,
+    ])
+  })
+
+  test("the Implementer and Designer carry the full-toolset baseline with a task fence", async () => {
+    const agents = await injectV2()
+    for (const name of ["implementer", "designer"] as const) {
+      expect(agents.get(name)?.permissions).toEqual(V2_FULL_TOOLSET)
+    }
+  })
+
+  test("never overwrites an agent that already exists in the draft", async () => {
+    const existing = { ...emptyV2Agent("orchestrator"), description: "user agent", mode: "primary" as const }
+    const snapshot = structuredClone(existing)
+    const agents = await injectV2([existing])
+    expect(agents.get("orchestrator")).toEqual(snapshot)
+    expect([...agents.keys()].sort()).toEqual([...INJECTED_AGENTS].sort())
   })
 })

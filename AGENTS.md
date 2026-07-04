@@ -4,8 +4,8 @@ An opencode plugin that ships an Orchestrator agent (claude-fable-5, high effort
 
 ## Working here
 
-- Commands: `bun test` (13 contract tests on the config hook), `bun run typecheck` (`tsc --noEmit`). No build step — `main` points at `src/index.ts`; opencode runs TS natively under Bun.
-- Layout: `src/index.ts` (agent definitions + config hook, default `{ id, server }` export), `src/prompts.ts` (all orchestration policy as exported string constants), `test/plugin.test.ts` (the entire external contract).
+- Commands: `bun test` (20 contract tests on the two plugin seams), `bun run typecheck` (`tsc --noEmit`). No build step — `main` points at `src/index.ts`; the CLI (Bun) and the Desktop sidecar (Electron ≥42's Node, native type stripping) both import TS directly. Keep the source erasable-syntax-only: no enums, no namespaces, explicit `.ts` extensions on relative imports.
+- Layout: `src/index.ts` (agent definitions + both plugin surfaces, default `{ id, server, setup }` export), `src/prompts.ts` (all orchestration policy as exported string constants), `test/plugin.test.ts` (the entire external contract).
 - The spec is PRD issue #1; it matches the implementation. Reading order for context:
   1. `CONTEXT.md` — glossary. Use these exact terms (Orchestrator, Plan Orchestrator, Worker, Brief, Verdict, Spot-check, User-facing surface) in code, tests, and issues.
   2. `gh issue view 1 --comments` — the PRD: the six agents, permission matrices, orchestration policy, test contract.
@@ -22,6 +22,14 @@ An opencode plugin that ships an Orchestrator agent (claude-fable-5, high effort
 - These models report `temperature: false`; never set `temperature` on them.
 - The `permission.ask` plugin hook is typed in `@opencode-ai/plugin` but never triggered — do not build on it.
 - The opencode repo moved: `sst/opencode` → `anomalyco/opencode`, default branch `dev`.
+
+## Two servers, two plugin surfaces (Desktop ≠ CLI)
+
+- The CLI runs the v1 server (`packages/opencode`); **opencode Desktop runs the v2 server** (`packages/server` + `packages/core`) in an Electron-Node sidecar. The v2 external-plugin loader (`packages/core/src/config/plugin/external.ts`) only accepts default exports shaped `{ id, effect }` or `{ id, setup }` and **silently ignores** v1 `{ id, server }` modules (`Effect.ignoreCause`).
+- Hence the dual default export `{ id, server, setup }`: v1 uses `server` (config hook), v2 uses `setup` (`context.agent.transform`). Each loader ignores the other's key. Don't remove either surface.
+- v2 permissions are ordered rule lists `{ action, resource, effect }` with **last-match-wins** (`PermissionV2.evaluate` uses `findLast`); an agent with no matching rule falls back to `"ask"`. There is no inheritance for plugin-created agents — v2's own built-ins each compose a full baseline, which is why the Implementer/Designer rulesets embed a `build`-equivalent allow-all baseline in v2 while staying inherit-only in v1.
+- v2's `config-agent` transform appends the user's global permission rules only to agents that exist when it runs; external plugin transforms run later, so our agents never receive user-global rules on Desktop. Known, accepted divergence from v1.
+- Loading on Desktop: npm/github plugin specs currently fail to import under the Node sidecar (`resolveEntryPoint` resolves a directory URL that Node cannot import). Use an **absolute file path** plugin entry (points at `src/index.ts`) — it works on both servers. Node's type stripping refuses TS inside `node_modules`, another reason npm distribution needs care (ship JS before publishing).
 
 ## Implementation conventions (decided in PRD #1)
 
