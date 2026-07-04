@@ -128,7 +128,7 @@ describe("worker permission matrix", () => {
     })
   })
 
-  test("the Implementer and Designer keep their full toolset but can never spawn subagents", async () => {
+  test("the Implementer and Designer keep their full toolset but can never spawn Workers", async () => {
     const agents = agentsOf(await inject())
     for (const name of ["implementer", "designer"] as const) {
       expect(agents[name]?.permission).toEqual({ task: { "*": "deny" } })

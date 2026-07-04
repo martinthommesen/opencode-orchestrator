@@ -31,7 +31,7 @@ export type AgentDefinition = {
 
 const FABLE = "anthropic/claude-fable-5"
 const OPUS = "anthropic/claude-opus-4-8"
-const GPT = "openai/gpt-5.5"
+const GPT_5_5 = "openai/gpt-5.5"
 
 /** Spot-check reads: the only filesystem access the Orchestrator keeps. */
 const READS = {
@@ -82,7 +82,7 @@ const AGENTS: Record<string, AgentDefinition> = {
     description:
       "Read-only reconnaissance Worker. Use proactively for codebase and docs questions: mapping territory, locating symbols, and gathering cited evidence before work is briefed.",
     mode: "subagent",
-    model: GPT,
+    model: GPT_5_5,
     variant: "high",
     prompt: EXPLORER_PROMPT,
     permission: {
@@ -95,7 +95,7 @@ const AGENTS: Record<string, AgentDefinition> = {
     description:
       "Implementation Worker for everything except User-facing surfaces. Use proactively for features, refactors, migrations, and tests once a tight, self-contained Brief exists.",
     mode: "subagent",
-    model: GPT,
+    model: GPT_5_5,
     variant: "high",
     prompt: IMPLEMENTER_PROMPT,
     permission: {
