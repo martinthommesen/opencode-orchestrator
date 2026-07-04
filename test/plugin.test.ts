@@ -19,11 +19,19 @@ function agentsOf(config: Config): Record<string, AgentDefinition> {
   return (config.agent ?? {}) as Record<string, AgentDefinition>
 }
 
+const READ_GATES = {
+  "*": "allow",
+  "*.env": "ask",
+  "*.env.*": "ask",
+  "*.env.example": "allow",
+} as const
+
 const READS = {
-  read: "allow",
+  read: READ_GATES,
   grep: "allow",
   glob: "allow",
   list: "allow",
+  external_directory: "ask",
 } as const
 
 describe("plugin module", () => {
@@ -212,23 +220,25 @@ async function injectV2(initial: V2Agent[] = []): Promise<Map<string, V2Agent>> 
   return agents
 }
 
+/** Spot-check reads with the platform's .env gates and external_directory default intact. */
 const V2_READS: PermissionRule[] = [
   { action: "read", resource: "*", effect: "allow" },
-  { action: "grep", resource: "*", effect: "allow" },
-  { action: "glob", resource: "*", effect: "allow" },
-  { action: "list", resource: "*", effect: "allow" },
-]
-
-const V2_ENV_GUARDS: PermissionRule[] = [
   { action: "read", resource: "*.env", effect: "ask" },
   { action: "read", resource: "*.env.*", effect: "ask" },
   { action: "read", resource: "*.env.example", effect: "allow" },
+  { action: "grep", resource: "*", effect: "allow" },
+  { action: "glob", resource: "*", effect: "allow" },
+  { action: "list", resource: "*", effect: "allow" },
+  { action: "external_directory", resource: "*", effect: "ask" },
 ]
 
 const V2_FULL_TOOLSET: PermissionRule[] = [
   { action: "*", resource: "*", effect: "allow" },
   { action: "external_directory", resource: "*", effect: "ask" },
-  ...V2_ENV_GUARDS,
+  { action: "read", resource: "*", effect: "allow" },
+  { action: "read", resource: "*.env", effect: "ask" },
+  { action: "read", resource: "*.env.*", effect: "ask" },
+  { action: "read", resource: "*.env.example", effect: "allow" },
   { action: "task", resource: "*", effect: "deny" },
 ]
 
@@ -269,7 +279,6 @@ describe("v2 injected agents", () => {
       { action: "task", resource: "implementer", effect: "allow" },
       { action: "task", resource: "designer", effect: "allow" },
       { action: "task", resource: "reviewer", effect: "allow" },
-      ...V2_ENV_GUARDS,
     ])
   })
 
@@ -289,12 +298,10 @@ describe("v2 injected agents", () => {
       { action: "*", resource: "*", effect: "deny" },
       ...V2_READS,
       { action: "webfetch", resource: "*", effect: "allow" },
-      ...V2_ENV_GUARDS,
     ])
     expect(agents.get("reviewer")?.permissions).toEqual([
       { action: "*", resource: "*", effect: "deny" },
       ...V2_READS,
-      ...V2_ENV_GUARDS,
     ])
   })
 

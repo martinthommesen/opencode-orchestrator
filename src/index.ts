@@ -34,12 +34,31 @@ const FABLE = "anthropic/claude-fable-5"
 const OPUS = "anthropic/claude-opus-4-8"
 const GPT_5_5 = "openai/gpt-5.5"
 
-/** Spot-check reads: the only filesystem access the Orchestrator keeps. */
+/**
+ * The platform's own read gates, restated so a broad read allow cannot
+ * override them (rules are last-match-wins, and the lockdown's rules come
+ * after the globally composed defaults).
+ */
+const READ_GATES = {
+  "*": "allow",
+  "*.env": "ask",
+  "*.env.*": "ask",
+  "*.env.example": "allow",
+} as const satisfies Record<string, PermissionAction>
+
+/**
+ * Spot-check reads: the only filesystem access the locked-down agents keep.
+ * `external_directory` is restated at the platform's `ask` default because the
+ * blanket `"*": "deny"` would otherwise wipe it — silently blocking reads of
+ * anything outside the workspace (global skills, docs) for these agents and,
+ * via subagent permission inheritance, for every Worker they spawn.
+ */
 const READS = {
-  read: "allow",
+  read: READ_GATES,
   grep: "allow",
   glob: "allow",
   list: "allow",
+  external_directory: "ask",
 } as const satisfies PermissionRules
 
 function orchestratorPermission(fence: Record<string, PermissionAction>): PermissionRules {
@@ -161,13 +180,6 @@ export function toRuleset(permission: PermissionRules): PermissionRule[] {
   )
 }
 
-/** Mirrors opencode's built-in v2 .env guards, appended after any broad read allow. */
-const ENV_GUARDS: PermissionRule[] = [
-  { action: "read", resource: "*.env", effect: "ask" },
-  { action: "read", resource: "*.env.*", effect: "ask" },
-  { action: "read", resource: "*.env.example", effect: "allow" },
-]
-
 /**
  * v2 has no permission inheritance for plugin-created agents (an agent with
  * no matching rule falls back to "ask" for everything), so full-toolset
@@ -175,14 +187,14 @@ const ENV_GUARDS: PermissionRule[] = [
  */
 const FULL_TOOLSET_BASELINE: PermissionRule[] = [
   { action: "*", resource: "*", effect: "allow" },
-  { action: "external_directory", resource: "*", effect: "ask" },
-  ...ENV_GUARDS,
+  ...toRuleset({ external_directory: "ask", read: READ_GATES }),
 ]
 
 function toV2Ruleset(definition: AgentDefinition): PermissionRule[] {
-  // Locked-down agents (blanket "*" deny) are self-contained rule sets;
+  // Locked-down agents (blanket "*" deny) are self-contained rule sets — the
+  // read gates and external_directory default live inside their maps;
   // full-toolset Workers get the platform baseline before their task fence.
-  if ("*" in definition.permission) return [...toRuleset(definition.permission), ...ENV_GUARDS]
+  if ("*" in definition.permission) return toRuleset(definition.permission)
   return [...FULL_TOOLSET_BASELINE, ...toRuleset(definition.permission)]
 }
 
