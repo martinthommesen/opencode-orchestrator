@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import type { Config, Plugin, PluginModule } from "@opencode-ai/plugin"
 import type { AgentDraft, PluginContext, Plugin as PluginV2 } from "@opencode-ai/plugin/v2/promise"
 import {
@@ -30,9 +33,48 @@ export type AgentDefinition = {
   permission: PermissionRules
 }
 
+/**
+ * An agent blueprint carries an ordered model chain instead of a pinned
+ * model: the first entry is the primary, the rest are startup fallbacks used
+ * when the primary's provider is not authenticated on this machine. opencode
+ * has no per-request failover (agent config takes a single model; the engine
+ * retries transient errors on the same model), so the chain is resolved once
+ * at injection time.
+ */
+type AgentBlueprint = Omit<AgentDefinition, "model"> & { models: readonly [string, ...string[]] }
+
 const FABLE = "anthropic/claude-fable-5"
 const OPUS = "anthropic/claude-opus-4-8"
 const GPT_5_5 = "openai/gpt-5.5"
+
+const PROVIDER_ENV_KEYS: Record<string, string> = {
+  anthropic: "ANTHROPIC_API_KEY",
+  openai: "OPENAI_API_KEY",
+}
+
+/**
+ * Providers usable on this machine: an env API key, an entry in opencode's
+ * auth store, or a provider configured in the loaded config. Best effort —
+ * an unreadable store just means env/config decide.
+ */
+export function authenticatedProviders(configured: Iterable<string> = []): Set<string> {
+  const providers = new Set(configured)
+  for (const [provider, key] of Object.entries(PROVIDER_ENV_KEYS)) {
+    if (process.env[key]) providers.add(provider)
+  }
+  try {
+    const dataHome = process.env["XDG_DATA_HOME"] ?? join(homedir(), ".local", "share")
+    const auth = JSON.parse(readFileSync(join(dataHome, "opencode", "auth.json"), "utf8")) as Record<string, unknown>
+    for (const provider of Object.keys(auth)) providers.add(provider)
+  } catch {
+    // no auth store on this machine
+  }
+  return providers
+}
+
+function resolveModel(models: readonly [string, ...string[]], available: ReadonlySet<string>): string {
+  return models.find((model) => available.has(model.slice(0, model.indexOf("/")))) ?? models[0]
+}
 
 /**
  * The platform's own read gates, restated so a broad read allow cannot
@@ -71,12 +113,12 @@ function orchestratorPermission(fence: Record<string, PermissionAction>): Permis
   }
 }
 
-const AGENTS: Record<string, AgentDefinition> = {
+const BLUEPRINTS: Record<string, AgentBlueprint> = {
   orchestrator: {
     description:
       "Directs the Swarm: decomposes work into Briefs, routes them to Workers, verifies claims by Spot-check, and gates acceptance behind Reviewer Verdicts. Never edits files or runs commands itself.",
     mode: "primary",
-    model: FABLE,
+    models: [FABLE, GPT_5_5],
     variant: "high",
     prompt: ORCHESTRATOR_PROMPT,
     permission: orchestratorPermission({
@@ -90,7 +132,7 @@ const AGENTS: Record<string, AgentDefinition> = {
     description:
       "The Orchestrator behind a read-only Swarm fence: it can spawn only the Explorer and Reviewer, so nothing reachable from this agent can mutate the working tree. Plan here, then switch to orchestrator to execute.",
     mode: "primary",
-    model: FABLE,
+    models: [FABLE, GPT_5_5],
     variant: "high",
     prompt: ORCHESTRATOR_PLAN_PROMPT,
     permission: orchestratorPermission({
@@ -102,7 +144,7 @@ const AGENTS: Record<string, AgentDefinition> = {
     description:
       "Read-only reconnaissance Worker. Use proactively for codebase and docs questions: mapping territory, locating symbols, and gathering cited evidence before work is briefed.",
     mode: "subagent",
-    model: GPT_5_5,
+    models: [GPT_5_5, OPUS],
     variant: "high",
     prompt: EXPLORER_PROMPT,
     permission: {
@@ -115,7 +157,7 @@ const AGENTS: Record<string, AgentDefinition> = {
     description:
       "Implementation Worker for everything except User-facing surfaces. Use proactively for features, refactors, migrations, and tests once a tight, self-contained Brief exists.",
     mode: "subagent",
-    model: GPT_5_5,
+    models: [GPT_5_5, OPUS],
     variant: "high",
     prompt: IMPLEMENTER_PROMPT,
     permission: {
@@ -126,7 +168,7 @@ const AGENTS: Record<string, AgentDefinition> = {
     description:
       "Design-and-build Worker that owns User-facing surfaces (UI, UX flows, visual styling, copy, public API shape) end to end, and produces taste-sensitive proposals such as API shapes and architecture options.",
     mode: "subagent",
-    model: OPUS,
+    models: [OPUS, GPT_5_5],
     variant: "high",
     prompt: DESIGNER_PROMPT,
     permission: {
@@ -137,7 +179,7 @@ const AGENTS: Record<string, AgentDefinition> = {
     description:
       "Read-only review Worker. Use proactively for Verdicts on plans and diffs: accept or revise, with concrete located findings classified as execution or approach flaws.",
     mode: "subagent",
-    model: OPUS,
+    models: [OPUS, GPT_5_5],
     variant: "high",
     prompt: REVIEWER_PROMPT,
     permission: {
@@ -145,6 +187,16 @@ const AGENTS: Record<string, AgentDefinition> = {
       ...READS,
     },
   },
+}
+
+/** Materializes the blueprints against the providers available right now. */
+export function resolveAgents(available: ReadonlySet<string>): Record<string, AgentDefinition> {
+  return Object.fromEntries(
+    Object.entries(BLUEPRINTS).map(([name, { models, ...definition }]) => [
+      name,
+      { ...definition, model: resolveModel(models, available) },
+    ]),
+  )
 }
 
 type SdkAgentConfig = NonNullable<Config["agent"]>[string]
@@ -155,8 +207,9 @@ type SdkAgentConfig = NonNullable<Config["agent"]>[string]
  */
 const server: Plugin = async () => ({
   config: async (config) => {
+    const available = authenticatedProviders(Object.keys(config.provider ?? {}))
     const agents = (config.agent ??= {})
-    for (const [name, definition] of Object.entries(AGENTS)) {
+    for (const [name, definition] of Object.entries(resolveAgents(available))) {
       // Never overwrite an agent the user already defined under the same name.
       // Widening cast: see the AgentDefinition doc comment.
       agents[name] ??= definition as unknown as SdkAgentConfig
@@ -204,7 +257,7 @@ function modelRef(model: string): { providerID: string; id: string; variant: "hi
 }
 
 function upsertAgents(draft: AgentDraft): void {
-  for (const [name, definition] of Object.entries(AGENTS)) {
+  for (const [name, definition] of Object.entries(resolveAgents(authenticatedProviders()))) {
     // Never overwrite an agent that already exists (user-defined or built-in).
     if (draft.get(name)) continue
     draft.update(name, (agent) => {

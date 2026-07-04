@@ -4,7 +4,7 @@ An opencode plugin that ships an Orchestrator agent (claude-fable-5, high effort
 
 ## Working here
 
-- Commands: `bun test` (20 contract tests on the two plugin seams), `bun run typecheck` (`tsc --noEmit`). No build step — `main` points at `src/index.ts`; the CLI (Bun) and the Desktop sidecar (Electron ≥42's Node, native type stripping) both import TS directly. Keep the source erasable-syntax-only: no enums, no namespaces, explicit `.ts` extensions on relative imports.
+- Commands: `bun test` (24 contract tests on the two plugin seams), `bun run typecheck` (`tsc --noEmit`). No build step — `main` points at `src/index.ts`; the CLI (Bun) and the Desktop sidecar (Electron ≥42's Node, native type stripping) both import TS directly. Keep the source erasable-syntax-only: no enums, no namespaces, explicit `.ts` extensions on relative imports.
 - Layout: `src/index.ts` (agent definitions + both plugin surfaces, default `{ id, server, setup }` export), `src/prompts.ts` (all orchestration policy as exported string constants), `test/plugin.test.ts` (the entire external contract).
 - The spec is PRD issue #1; it matches the implementation. Reading order for context:
   1. `CONTEXT.md` — glossary. Use these exact terms (Orchestrator, Plan Orchestrator, Worker, Brief, Verdict, Spot-check, User-facing surface) in code, tests, and issues.
@@ -18,6 +18,7 @@ An opencode plugin that ships an Orchestrator agent (claude-fable-5, high effort
 
 - Model IDs: `anthropic/claude-fable-5`, `anthropic/claude-opus-4-8` (dash form — `claude-opus-4.8` does not exist), `openai/gpt-5.5`. Direct providers only; never the `opencode/` (Zen) prefix.
 - Reasoning effort is the agent-level `variant: "high"` field; it only applies because each agent pins its own `model`.
+- Agent `model` is a single string — opencode has **no per-request model failover** (the engine retries transient errors on the same model; `packages/opencode/src/session/retry.ts`). The plugin's blueprints therefore carry ordered model chains resolved once at injection time against the authenticated providers (env API keys, `$XDG_DATA_HOME/opencode/auth.json`, `config.provider`); with no provider available the primary is kept so the runtime error stays clear. Chains cross providers on purpose: fable-5→gpt-5.5, gpt-5.5→opus-4-8, opus-4-8→gpt-5.5.
 - Lockdown uses the `permission` field — the `tools` map is deprecated. A blanket `"*": "deny"` plus explicit allows strips denied tools from the model's tool list entirely.
 - The blanket deny also wipes *rule-only* permissions that have no tool (verified live on 1.17.13): `external_directory` and the platform's `read` .env gates. Every locked-down agent must restate them (`external_directory: "ask"`, `read: READ_GATES`) or outside-workspace reads hard-deny — and Workers inherit the parent session's external_directory rules, so a broken Orchestrator blocks the whole Swarm. `/compact` is **not** permission-gated (compaction runs under the built-in `compaction` agent; verified live on both servers).
 - These models report `temperature: false`; never set `temperature` on them.

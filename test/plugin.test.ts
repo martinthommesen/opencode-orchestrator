@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import type { Config, PluginInput } from "@opencode-ai/plugin"
 import type { AgentDraft, PluginContext } from "@opencode-ai/plugin/v2/promise"
-import OrchestratorPlugin from "../src/index.ts"
+import OrchestratorPlugin, { resolveAgents } from "../src/index.ts"
 import type { AgentDefinition, PermissionRule } from "../src/index.ts"
+
+// Model resolution consults this machine's provider auth; pin both providers
+// as available so the seam tests are hermetic and assert the primary models.
+process.env["ANTHROPIC_API_KEY"] ??= "contract-test"
+process.env["OPENAI_API_KEY"] ??= "contract-test"
 
 const PRIMARIES = ["orchestrator", "orchestrator-plan"] as const
 const WORKERS = ["explorer", "implementer", "designer", "reviewer"] as const
@@ -146,6 +151,42 @@ describe("worker permission matrix", () => {
     for (const name of ["implementer", "designer"] as const) {
       expect(agents[name]?.permission).toEqual({ task: { "*": "deny" } })
     }
+  })
+})
+
+describe("model fallback chains", () => {
+  const PRIMARY: Record<string, string> = {
+    orchestrator: "anthropic/claude-fable-5",
+    "orchestrator-plan": "anthropic/claude-fable-5",
+    explorer: "openai/gpt-5.5",
+    implementer: "openai/gpt-5.5",
+    designer: "anthropic/claude-opus-4-8",
+    reviewer: "anthropic/claude-opus-4-8",
+  }
+
+  test("with both providers available every agent runs its primary model", () => {
+    const agents = resolveAgents(new Set(["anthropic", "openai"]))
+    for (const [name, model] of Object.entries(PRIMARY)) expect(agents[name]?.model).toBe(model)
+  })
+
+  test("without openai the gpt-5.5 Workers fall back to claude-opus-4-8", () => {
+    const agents = resolveAgents(new Set(["anthropic"]))
+    expect(agents["explorer"]?.model).toBe("anthropic/claude-opus-4-8")
+    expect(agents["implementer"]?.model).toBe("anthropic/claude-opus-4-8")
+    expect(agents["orchestrator"]?.model).toBe("anthropic/claude-fable-5")
+  })
+
+  test("without anthropic every Claude agent falls back to gpt-5.5", () => {
+    const agents = resolveAgents(new Set(["openai"]))
+    for (const name of ["orchestrator", "orchestrator-plan", "designer", "reviewer"]) {
+      expect(agents[name]?.model).toBe("openai/gpt-5.5")
+    }
+    expect(agents["explorer"]?.model).toBe("openai/gpt-5.5")
+  })
+
+  test("with no provider available the primary model is kept for a clear runtime error", () => {
+    const agents = resolveAgents(new Set())
+    for (const [name, model] of Object.entries(PRIMARY)) expect(agents[name]?.model).toBe(model)
   })
 })
 
